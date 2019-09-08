@@ -191,7 +191,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--path", type=str, default="models/lunarlander_model")
     parser.add_argument("--load_epoch", type=int, default=-1)
-    parser.add_argument("--tests", type=int, default=3)
+    parser.add_argument("--tests", type=int, default=0)
     parser.add_argument("--init_epoch", type=int, default=0)
     parser.add_argument("--save_freq", type=int, default=20)
     parser.add_argument("--epochs", type=int, default=200)
