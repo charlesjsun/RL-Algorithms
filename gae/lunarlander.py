@@ -204,11 +204,16 @@ if __name__ == '__main__':
     parser.add_argument("--max_ep_len", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--hidden_layers", type=str, default="[64, 32]")
     args = parser.parse_args()
+
+    np.random.seed(args.seed)
+    tf.random.set_seed(args.seed)
 
     env = gym.make('LunarLanderContinuous-v2')
 
-    agent = Agent(env.observation_space.shape[0], env.action_space.shape[0], hidden_layers=[128,64], 
+    hidden_layers = [int(x) for x in args.hidden_layers[1:-1].split(",")]
+    agent = Agent(env.observation_space.shape[0], env.action_space.shape[0], hidden_layers=hidden_layers, 
                     policy_lr=args.pi_lr, v_lr=args.v_lr, v_update_steps=args.v_update_steps)
 
     if args.load_epoch >= 0:
@@ -222,10 +227,6 @@ if __name__ == '__main__':
         stds = tf.exp(agent.log_stds)
         print(state[0], means, agent.log_stds, stds)
         input()
-
-    np.random.seed(args.seed)
-    tf.random.set_seed(args.seed)
-
 
     if args.epochs > 0 and not args.test_only:
         train(agent, env, args.epochs, args.bs, args.path, save_freq=args.save_freq, 
