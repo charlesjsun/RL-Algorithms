@@ -5,7 +5,7 @@ import time
 import tensorflow as tf 
 from tensorflow.keras.layers import Dense, Input
 from tensorflow.keras.models import Model 
-from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.optimizers import Adam, RMSprop
 from tensorflow.keras import utils
 
 class Agent:
@@ -28,7 +28,7 @@ class Agent:
         # self.policy = Model(inputs=policy_input, outputs=[mu, sigma])
         self.policy = Model(inputs=policy_input, outputs=mu)
         self.log_stds = tf.Variable(-np.ones((output_dim,)) / 2.0, dtype="float32", name="log_stds", trainable=True)
-        self.policy_opt = Adam(lr)
+        self.policy_opt = RMSprop(lr)
 
     def _build_value_model(self, input_dim, hidden_layers, lr):
         v_input = Input(shape=(input_dim,))
@@ -37,10 +37,10 @@ class Agent:
             X = Dense(size, activation="tanh")(X)
         X = Dense(1)(X)
         self.v = Model(inputs=v_input, outputs=X)
-        self.v_opt = Adam(lr)
+        self.v_opt = RMSprop(lr)
 
-    def _gaussian_log_likelihood(self, actions, means, stds, log_stds):
-        return -0.5 * (tf.reduce_sum((actions - means) ** 2 / (stds ** 2) + 2 * log_stds + tf.math.log(np.pi)))
+    def _gaussian_log_likelihood(self, actions, means, stds, log_stds, eps=1e-8):
+        return -0.5 * (tf.reduce_sum(((actions - means) / (stds + eps)) ** 2 + 2 * log_stds + tf.math.log(2 * np.pi), axis=1))
 
     def update(self, states, actions, rewards_to_go):
         """Does one step of policy gradient update
@@ -64,14 +64,12 @@ class Agent:
             return -tf.reduce_mean(log_probs * advs)
 
         # self.policy_opt.minimize(policy_loss, lambda: self.policy.trainable_weights)
-        for _ in range(self.v_update_steps):
-            self.policy_opt.minimize(policy_loss, lambda: self.policy.trainable_weights + [self.log_stds])
-
+        self.policy_opt.minimize(policy_loss, lambda: self.policy.trainable_weights + [self.log_stds])
 
         # Update the Value function
         def v_loss():
             values = self.v(states)
-            return tf.reduce_mean(tf.math.squared_difference(values, rewards_to_go))
+            return tf.reduce_mean((values - rewards_to_go) ** 2)
 
         for _ in range(self.v_update_steps):
             self.v_opt.minimize(v_loss, lambda: self.v.trainable_weights)
@@ -220,13 +218,15 @@ if __name__ == '__main__':
         agent.load(f"{args.path}_{args.load_epoch}")
     
     if args.verbose:
-        agent.policy.summary()
-        agent.v.summary()
-        state = np.expand_dims(env.reset(), axis=0)
-        means = agent.policy.predict(state)[0]
-        stds = tf.exp(agent.log_stds)
-        print(state[0], means, agent.log_stds, stds)
-        input()
+        # agent.policy.summary()
+        # agent.v.summary()
+        # state = np.expand_dims(env.reset(), axis=0)
+        # means = agent.policy.predict(state)[0]
+        # stds = tf.exp(agent.log_stds)
+        # print(state[0], means, agent.log_stds, stds)
+        print(args)
+        print(tf.exp(agent.log_stds))
+        # input()
 
     if args.epochs > 0 and not args.test_only:
         train(agent, env, args.epochs, args.bs, args.path, save_freq=args.save_freq, 
