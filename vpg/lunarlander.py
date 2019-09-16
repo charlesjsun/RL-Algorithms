@@ -5,7 +5,7 @@ import time
 import tensorflow as tf 
 from tensorflow.keras.layers import Dense, Input
 from tensorflow.keras.models import Model 
-from tensorflow.keras.optimizers import Adam, RMSprop, SGD
+from tensorflow.keras.optimizers import Adam, RMSprop
 from tensorflow.keras import regularizers
 from tensorflow.keras import utils
 
@@ -29,7 +29,7 @@ class Agent:
         self.policy = Model(inputs=policy_input, outputs=[mu, sigma])
         # self.policy = Model(inputs=policy_input, outputs=mu)
         # self.log_stds = tf.Variable(-0.75 * np.ones((output_dim,)), dtype="float32", name="log_stds", trainable=True)
-        self.policy_opt = Adam(lr)
+        self.policy_opt = RMSprop(lr)
 
     def _build_value_model(self, input_dim, hidden_layers, lr):
         v_input = Input(shape=(input_dim,))
@@ -38,7 +38,7 @@ class Agent:
             X = Dense(size, activation="relu", kernel_initializer="glorot_normal", kernel_regularizer=regularizers.l2(0.01))(X)
         X = Dense(1, activation="linear", kernel_initializer="glorot_normal", kernel_regularizer=regularizers.l2(0.01))(X)
         self.v = Model(inputs=v_input, outputs=X)
-        self.v_opt = Adam(lr)
+        self.v_opt = RMSprop(lr)
 
     def _gaussian_log_likelihood(self, actions, means, stds, log_stds, eps=1e-8):
         pre_sum = -0.5 * (((actions-means)/(stds+eps))**2 + 2*log_stds + np.log(2*np.pi))
@@ -47,7 +47,7 @@ class Agent:
 
     i = 0
 
-    def update(self, state, action, G):
+    def update(self, states, actions, rewards_to_go):
         """Does one step of policy gradient update
         
         Args:
@@ -55,29 +55,36 @@ class Agent:
             action: np.array of sample actions. dim = (n_samples,)
             weights: np.array of sample weights e.g. rewards-to-go. dim = (n_samples,)
         """
-        state = np.expand_dims(state, axis=0)
-        action = np.expand_dims(action, axis=0)
-        G = np.expand_dims(G, axis=0)
-
         # Update the policy
         def policy_loss():
-            mean, std = self.policy(state)
-            log_std = tf.math.log(std)
-            log_prob = self._gaussian_log_likelihood(action, mean, std, log_std)
-            adv = G - self.v(state)
-            loss = -tf.reduce_mean(log_prob * adv)
+            means, stds = self.policy(states)
+            log_stds = tf.math.log(stds)
+            log_probs = self._gaussian_log_likelihood(actions, means, stds, log_stds)
+            # advs = rewards_to_go - self.v(states)
+            # return -tf.reduce_mean(log_probs * advs)
+            # means = self.policy(states)
+            # stds = tf.exp(self.log_stds)
+            # log_probs = self._gaussian_log_likelihood(actions, means, stds, self.log_stds)
+            values = self.v(states)
+            rtg = np.reshape(rewards_to_go, (len(rewards_to_go), 1))
+            advs = rtg - values
+            advs_mean = tf.reduce_mean(advs)
+            advs_std = tf.math.reduce_std(advs)
+            advs = (advs - advs_mean) / advs_std
+
+            # advs = rewards_to_go
+            loss = - tf.reduce_mean(log_probs * advs)
 
             # if (Agent.i % 200 == 0):
-            #     print("States:", states)
+            #     # print("States:", states)
             #     print("Meanss:", means)
-            #     print("Log Stds:", log_stds)
+            #     # print("Log Stds:", log_stds)
             #     print("Stds:", stds)
-            #     print("Log Probs:", log_probs)
-            #     print("Values:", values)
-            #     print("Rewards:", rtg)
-            #     print("Advs:", advs)
-            #     print("Loss:", loss)
-
+            #     # print("Log Probs:", log_probs)
+            #     # print("Values:", values)
+            #     # print("Rewards:", rtg)
+            #     # print("Advs:", advs)
+            #     # print("Loss:", loss)
             # Agent.i += 1
 
             return loss
@@ -87,8 +94,8 @@ class Agent:
 
         # Update the Value function
         def v_loss():
-            value = self.v(state)
-            return tf.reduce_mean((value - G) ** 2)
+            values = self.v(states)
+            return tf.reduce_mean((values - rewards_to_go) ** 2)
 
         for _ in range(self.v_update_steps):
             self.v_opt.minimize(v_loss, lambda: self.v.trainable_weights)
@@ -120,34 +127,62 @@ class Agent:
         self.v = tf.keras.models.load_model(f"{path}_v.{extension}")
         # self.log_stds.assign(np.load(f"{path}_log_stds.npy"))
 
+def reward_to_go(rewards, discount=0.99):
+    n = len(rewards)
+    rtg = np.zeros_like(rewards)
+    for t in reversed(range(n)):
+        rtg[t] = rewards[t] + discount * (rtg[t + 1] if t + 1 < n else 0)
+    return rtg
+
 def train_one_epoch(agent, env, batch_size, discount=0.99, max_ep_len=1000):
     ep_returns = []
     ep_lens = []
 
+    states = []
+    actions = []
+    rewards_to_go = []
+
+    curr_rewards = []
     s = env.reset()
+    done = False
 
     ep_len = 0
-    ep_return = 0
 
-    for i in range(batch_size):
+    while True:
         a = agent.sample_action(s)
         new_s, r, done, _ = env.step(a)
-        G = r
-        if not done:
-            G += discount * agent.get_value(new_s)
-        agent.update(s, a, G)
+        ep_len += 1
+
+        states.append(s)
+        actions.append(a)
+        
+        curr_rewards.append(r)
+        
         s = new_s
 
-        ep_len += 1
-        ep_return += r
-
         if done or ep_len == max_ep_len:
-            ep_returns.append(ep_return)
+            ep_returns.append(sum(curr_rewards))
             ep_lens.append(ep_len)
-            ep_return = 0
-            ep_len = 0
+
+            if not done:
+                curr_rewards[-1] = r + discount * agent.get_value(s)
+
+            rewards_to_go += list(reward_to_go(curr_rewards, discount))
+            
+            if len(states) >= batch_size:
+                break
+
             s = env.reset()
-        
+            curr_rewards = []
+            done = False
+            ep_len = 0
+
+    states = np.array(states, dtype="float32")
+    rewards_to_go = np.array(rewards_to_go, dtype="float32")
+    actions = np.array(actions)
+
+    agent.update(states, actions, rewards_to_go)
+
     return ep_returns, ep_lens
             
 def train(agent, env, epochs, batch_size, save_path, save_freq=100, init_epoch=0, discount=0.99, max_ep_len=1000):
@@ -175,6 +210,9 @@ def test_agent(agent, env, n_tests, delay=1):
                 print(f"Done. Total Reward = {total_reward}")
                 time.sleep(2)
                 break
+
+
+## python lunarlander.py --bs 1 --v_lr 1e-2 --v_update_steps 1 --max_ep_len 1000 --pi_lr 1e-3 --seed 0 --hidden_layers "[100, 64]" --verbose --discount 0.99 --epochs 20000 --save_freq 1000
 
 if __name__ == '__main__':
     import argparse
