@@ -26,10 +26,10 @@ class Agent:
             X = Dense(size, activation="tanh", kernel_initializer="glorot_normal")(X)
         mu = Dense(output_dim, activation=None, kernel_initializer="zeros", use_bias=False)(X)
         # sigma = Dense(output_dim, activation="softplus", kernel_initializer="glorot_normal", use_bias=False)(X)
-        sigma = Dense(output_dim, activation=None, kernel_initializer="zeros", use_bias=False)(X)
-        self.policy = Model(inputs=policy_input, outputs=[mu, sigma])
-        # self.policy = Model(inputs=policy_input, outputs=mu)
-        # self.log_stds = tf.Variable(-0.75 * np.ones((output_dim,)), dtype="float32", name="log_stds", trainable=True)
+        # sigma = Dense(output_dim, activation=None, kernel_initializer="zeros", use_bias=False)(X)
+        # self.policy = Model(inputs=policy_input, outputs=[mu, sigma])
+        self.policy = Model(inputs=policy_input, outputs=mu)
+        self.log_stds = tf.Variable(-0.75 * np.ones((output_dim,)), dtype="float32", name="log_stds", trainable=True)
         self.policy_opt = Adam(lr)
 
     def _build_value_model(self, input_dim, hidden_layers, lr):
@@ -56,44 +56,42 @@ class Agent:
 
         # Update the policy
         def policy_loss():
-            def gaussian_log_likelihood(actions, means, stds, log_stds, eps=1e-6):
+            def gaussian_log_likelihood(actions, means, stds, log_stds, eps=1e-8):
                 pre_sum = -0.5 * (((actions-means)/(stds+eps))**2 + 2*log_stds + np.log(2*np.pi))
                 return tf.reduce_sum(pre_sum, axis=1)
                 # return -0.5 * (tf.reduce_sum(((actions - means) / (stds + eps)) ** 2 + 2 * log_stds, axis=1) + self.output_dim * np.log(2 * np.pi))
                 
             # mean, std = self.policy(state)
             # log_std = tf.math.log(std + 1e-6)
-            mean, log_std = self.policy(state)
+            # mean, log_std = self.policy(state)
+            mean = self.policy(state)
+            log_std = self.log_stds
             std = tf.exp(log_std)
             log_prob = gaussian_log_likelihood(action, mean, std, log_std)
             adv = G - self.v(state)
-            loss = -tf.reduce_mean(I * log_prob * adv)
+            loss = -I * tf.reduce_mean(log_prob * adv)
+            # loss = -tf.reduce_mean(log_prob * adv)
             return loss
 
-        with tf.GradientTape() as tape:
-            # logits = self.policy(state)
-            loss_value = policy_loss()
-        grads = tape.gradient(loss_value, self.policy.trainable_weights)
-        self.policy_opt.apply_gradients(zip(grads, self.policy.trainable_weights))
+        self.policy_opt.minimize(policy_loss, lambda: self.policy.trainable_weights + [self.log_stds])
 
         # Update the Value function
         def v_loss():
             value = self.v(state)
-            return tf.reduce_mean((value - G) ** 2)
+            return tf.reduce_mean((G - value) ** 2)
 
         for _ in range(self.v_update_steps):
-            with tf.GradientTape() as tape:
-                # logits = self.v(state)
-                loss_value = v_loss()
-            grads = tape.gradient(loss_value, self.v.trainable_weights)
-            self.v_opt.apply_gradients(zip(grads, self.v.trainable_weights))
+            self.v_opt.minimize(v_loss, lambda: self.v.trainable_weights)
 
-        if (Agent.i % 100 == 0):
+        if (Agent.i % 200 == 0):
             # mean, std = self.policy(state)
-            mean, log_std = self.policy(state)
+            # mean, log_std = self.policy(state)
+            # std = tf.exp(log_std)
+            # mean = self.policy(state)
+            log_std = self.log_stds
             std = tf.exp(log_std)
-            print("States:", state)
-            print("Means:", mean)
+            # print("States:", state)
+            # print("Means:", mean)
             print("Stds:", std)
             #     print("Log Stds:", log_stds)
             #     print("Log Probs:", log_probs)
@@ -106,11 +104,11 @@ class Agent:
     def sample_action(self, s):
         """"""
         state = np.expand_dims(s, axis=0)
-        # means = self.policy.predict(state)[0]
-        # stds = tf.exp(self.log_stds)
+        mean = self.policy.predict(state)
+        std = [tf.exp(self.log_stds)]
         # mean, std = self.policy.predict(state)
-        mean, log_std = self.policy.predict(state)
-        std = tf.exp(log_std)
+        # mean, log_std = self.policy.predict(state)
+        # std = tf.exp(log_std)
         noise = tf.random.normal((self.output_dim,))
         sample = mean[0] + std[0] * noise
         return tf.clip_by_value(sample, -1.0, 1.0).numpy()
@@ -146,6 +144,8 @@ def train_one_epoch(agent, env, batch_size, discount=0.99, max_ep_len=1000):
     while True:
         a = agent.sample_action(s)
         new_s, r, done, _ = env.step(a)
+        if ep_len == max_ep_len:
+            r += -100
         G = r
         if not done:
             G += discount * agent.get_value(new_s)
@@ -165,8 +165,8 @@ def train_one_epoch(agent, env, batch_size, discount=0.99, max_ep_len=1000):
             ep_len = 0
             s = env.reset()
             I = 1.0
-            break
-        
+            if i >= batch_size:
+                break
         
     return ep_returns, ep_lens
             
@@ -222,10 +222,12 @@ if __name__ == '__main__':
 
     env = gym.make('BipedalWalker-v2')
 
-    hidden_layers = [int(x) for x in args.hidden_layers[1:-1].split(",")]
+    if args.hidden_layers[1:-1].strip() == "":
+        hidden_layers = []
+    else:
+        hidden_layers = [int(x) for x in args.hidden_layers[1:-1].split(",")]
     agent = Agent(env.observation_space.shape[0], env.action_space.shape[0], hidden_layers=hidden_layers, 
                     policy_lr=args.pi_lr, v_lr=args.v_lr, v_update_steps=args.v_update_steps)
-
     if args.load_epoch >= 0:
         agent.load(f"{args.path}_{args.load_epoch}")
     
