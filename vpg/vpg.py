@@ -40,7 +40,7 @@ def train_one_epoch(agent, env, batch_size, discount=0.99, max_ep_len=1000):
         
         s = new_s
 
-        if done or ep_len == max_ep_len:
+        if done or ep_len == max_ep_len or len(states) >= batch_size:
             ep_returns.append(sum(curr_rewards))
             ep_lens.append(ep_len)
 

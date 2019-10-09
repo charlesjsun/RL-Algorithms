@@ -27,7 +27,7 @@ class ContinuousAgent:
         # sigma = Dense(output_dim, kernel_initializer="identity", activation=None)(X)
         # self.policy = Model(inputs=policy_input, outputs=[mu, sigma])
         self.policy = Model(inputs=policy_input, outputs=mu)
-        self.log_stds = tf.Variable(-np.ones((output_dim,)) / 2.0, dtype="float32", name="log_stds", trainable=True)
+        self.log_stds = tf.Variable(-0.75 * np.ones((output_dim,)), dtype="float32", name="log_stds", trainable=True)
         self.policy_opt = Adam(lr)
 
     def _build_value_model(self, input_dim, hidden_layers, lr):
@@ -61,6 +61,8 @@ class ContinuousAgent:
             stds = tf.exp(self.log_stds)
             log_probs = self._gaussian_log_likelihood(actions, means, stds, self.log_stds)
             advs = rewards_to_go - self.v(states)
+            advs_mean, advs_std = tf.reduce_mean(advs), tf.math.reduce_std(advs)
+            advs = (advs - advs_mean) / advs_std
             return -tf.reduce_mean(log_probs * advs)
 
         # self.policy_opt.minimize(policy_loss, lambda: self.policy.trainable_weights)
@@ -73,6 +75,9 @@ class ContinuousAgent:
 
         for _ in range(self.v_update_steps):
             self.v_opt.minimize(v_loss, lambda: self.v.trainable_weights)
+
+        stds = tf.exp(self.log_stds)
+        print("Stds:", stds)
 
     def sample_action(self, s):
         """"""
