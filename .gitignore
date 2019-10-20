@@ -2,3 +2,5 @@
 *.h5
 *.npy
 *.pyc
+*.pth
+*.out
