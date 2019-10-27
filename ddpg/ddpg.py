@@ -52,18 +52,20 @@ class ReplayBuffer:
         )
 
 class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_layers):
+    def __init__(self, state_dim, action_dim, hidden_layers, final_activation="tanh"):
         super(Actor, self).__init__()
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self._build_policy_model([state_dim] + hidden_layers + [action_dim])
+        self._build_policy_model([state_dim] + hidden_layers + [action_dim], final_activation)
 
-    def _build_policy_model(self, sizes):
+    def _build_policy_model(self, sizes, final_activation):
         layers = []
         for i, o in zip(sizes[:-2], sizes[1:-1]):
             layers.append(nn.Linear(i, o))
             layers.append(nn.Tanh())
         layers.append(nn.Linear(sizes[-2], sizes[-1]))
+        if final_activation == "tanh":
+            layers.append(nn.Tanh())
         self.policy = nn.Sequential(*layers)
 
     def forward(self, states):
@@ -151,7 +153,7 @@ class Agent(nn.Module):
         return np.clip(action + noise, self.action_low, self.action_high)
 
 def train(agent=None, env=None, episodes=10000, buffer_size=1e6, batch_size=100, save_path=None, save_freq=100, init_ep=0, 
-        discount=0.99, max_ep_len=1000, lr=1e-3, polyak=0.995, min_steps_update=500, start_steps=1e5):
+        discount=0.99, max_ep_len=1000, lr=3e-4, polyak=0.995, min_steps_update=500, start_steps=1e4):
 
     target = Agent(agent.state_dim, agent.action_dim, agent.action_noise, 
                 agent.action_low, agent.action_high, agent.hidden_layers).to(device)
@@ -188,9 +190,10 @@ def train(agent=None, env=None, episodes=10000, buffer_size=1e6, batch_size=100,
                 target_param.data.copy_(polyak * target_param.data + (1.0 - polyak) * param.data)
 
     # Random exploration at the beginning for start_steps
+    print(f"Start steps: {int(start_steps)}")
     s, r, done = env.reset(), 0, False
     ep_len = 0
-    for _ in range(start_steps):
+    for _ in range(int(start_steps)):
         a = env.action_space.sample()
         new_s, r, done, _ = env.step(a)
         buffer.store(s, a, r, new_s, done)
@@ -201,6 +204,7 @@ def train(agent=None, env=None, episodes=10000, buffer_size=1e6, batch_size=100,
             s, r, done = env.reset(), 0, False
 
     # Actual training
+    print("Start Training")
     ep = init_ep
     last_save = ep
     while ep < episodes:
@@ -247,17 +251,23 @@ def train(agent=None, env=None, episodes=10000, buffer_size=1e6, batch_size=100,
         
     torch.save(agent.state_dict(), f"./{save_path}_{ep}.pth")
 
-def test_agent(agent, env, n_tests, delay=1):
+def test_agent(agent, env, n_tests, delay=1.0, bullet=True):
+    agent.action_noise = 0.0
     for test in range(n_tests):
-        print(f"Test #{test}")
+        if bullet:
+            env.render(mode="human")
         s = env.reset()
         done = False
         total_reward = 0
+        print(f"Test #{test}")
         while True:
-            time.sleep(delay)
-            env.render()
-            a = agent.sample_action(s)
-            print(f"Chose action {a} for state {s}")
+            # time.sleep(delay)
+            if bullet:
+                env.camera_adjust()
+            else:
+                env.render()
+            a = agent.sample_action_numpy(s)
+            # print(f"Chose action {a} for state {s}")
             s, reward, done, _ = env.step(a)
             total_reward += reward
             if done:
@@ -276,17 +286,17 @@ if __name__ == '__main__':
     parser.add_argument("--save_freq", type=int, default=500)
     parser.add_argument("--episodes", type=int, default=10000)
     parser.add_argument("--bs", type=int, default=100)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--test_only", action="store_true")
     parser.add_argument("--discount", type=float, default=0.99)
     parser.add_argument("--max_ep_len", type=int, default=2000)
-    parser.add_argument("--seed", type=int, default=42069)
+    parser.add_argument("--seed", type=int, default=69420)
     parser.add_argument("--hidden_layers", type=str, default="[128, 64]")
     parser.add_argument("--action_noise", type=float, default=0.1)
     parser.add_argument("--polyak", type=float, default=0.995)
     parser.add_argument("--min_steps_update", type=int, default=500)
     parser.add_argument("--buffer_size", type=int, default=1e6)
-    parser.add_argument("--start_steps", type=int, default=1e5)
+    parser.add_argument("--start_steps", type=int, default=1e4)
     args = parser.parse_args()
     print(args)
 
@@ -313,6 +323,6 @@ if __name__ == '__main__':
             min_steps_update=args.min_steps_update, buffer_size=args.buffer_size, start_steps=args.start_steps)
 
     if args.tests > 0:
-        test_agent(agent, env, args.tests, 0.025)
+        test_agent(agent, env, args.tests, 1.0 / 60.0)
 
     env.close()
