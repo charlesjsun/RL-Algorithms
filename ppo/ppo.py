@@ -291,17 +291,23 @@ def train(agent=None, env=None, episodes=10000, batch_size=4000, save_path=None,
         
     torch.save(agent.state_dict(), f"./{save_path}_{ep}.pth")
 
-def test_agent(agent, env, n_tests, delay=1):
+def test_agent(agent, env, n_tests, delay=1.0, bullet=True):
+    agent.log_std.data = torch.full((agent.action_dim,), np.log(0.1))
     for test in range(n_tests):
-        print(f"Test #{test}")
+        if bullet:
+            env.render(mode="human")
         s = env.reset()
         done = False
         total_reward = 0
+        print(f"Test #{test}")
         while True:
-            time.sleep(delay)
-            env.render()
-            a = agent.sample_action(s)
-            print(f"Chose action {a} for state {s}")
+            # time.sleep(delay)
+            if bullet:
+                env.camera_adjust()
+            else:
+                env.render()
+            a = agent.sample_action_numpy(s)
+            # print(f"Chose action {a} for state {s}")
             s, reward, done, _ = env.step(a)
             total_reward += reward
             if done:
@@ -329,7 +335,7 @@ if __name__ == '__main__':
     parser.add_argument("--discount", type=float, default=0.99)
     parser.add_argument("--lam", type=float, default=0.97)
     parser.add_argument("--max_ep_len", type=int, default=2000)
-    parser.add_argument("--seed", type=int, default=42069)
+    parser.add_argument("--seed", type=int, default=420690)
     parser.add_argument("--hidden_layers", type=str, default="[128, 64]")
     parser.add_argument("--init_std", type=float, default=0.5)
     parser.add_argument("--eps_clip", type=float, default=0.2)
@@ -358,6 +364,6 @@ if __name__ == '__main__':
             eps_clip=args.eps_clip, vf_coef=args.vf_coef, lr=args.lr, update_steps=args.update_steps)
 
     if args.tests > 0:
-        test_agent(agent, env, args.tests, 0.025)
+        test_agent(agent, env, args.tests, 1.0 / 60.0)
 
     env.close()
