@@ -151,7 +151,7 @@ class Agent(nn.Module):
         return np.clip(action + noise, self.action_low, self.action_high)
 
 def train(agent=None, env=None, episodes=10000, buffer_size=1e6, batch_size=100, save_path=None, save_freq=100, init_ep=0, 
-        discount=0.99, max_ep_len=1000, lr=1e-3, polyak=0.995, min_steps_update=500):
+        discount=0.99, max_ep_len=1000, lr=1e-3, polyak=0.995, min_steps_update=500, start_steps=1e5):
 
     target = Agent(agent.state_dim, agent.action_dim, agent.action_noise, 
                 agent.action_low, agent.action_high, agent.hidden_layers).to(device)
@@ -164,10 +164,10 @@ def train(agent=None, env=None, episodes=10000, buffer_size=1e6, batch_size=100,
     def update(update_steps):
         for _ in range(update_steps):
             states, actions, rewards, next_states, dones = buffer.sample_torch(batch_size)
-            next_actions = agent.evaluate_states(next_states)
 
             # q-function loss
-            target_qs = rewards + discount * (1.0 - dones) * agent.evaluate(next_states, next_actions)
+            target_actions = target.evaluate_states(next_states)
+            target_qs = (rewards + discount * (1.0 - dones) * target.evaluate(next_states, target_actions)).detach()
             critic_loss = torch.mean((agent.evaluate(states, actions) - target_qs) ** 2)
             
             # optimize q one step
@@ -187,9 +187,22 @@ def train(agent=None, env=None, episodes=10000, buffer_size=1e6, batch_size=100,
             for param, target_param in zip(agent.parameters(), target.parameters()):
                 target_param.data.copy_(polyak * target_param.data + (1.0 - polyak) * param.data)
 
+    # Random exploration at the beginning for start_steps
+    s, r, done = env.reset(), 0, False
+    ep_len = 0
+    for _ in range(start_steps):
+        a = env.action_space.sample()
+        new_s, r, done, _ = env.step(a)
+        buffer.store(s, a, r, new_s, done)
+        s = new_s
+        ep_len += 1
+        if done or ep_len == max_ep_len:
+            ep_len = 0
+            s, r, done = env.reset(), 0, False
+
+    # Actual training
     ep = init_ep
     last_save = ep
-    
     while ep < episodes:
         start = time.time()
 
@@ -273,6 +286,7 @@ if __name__ == '__main__':
     parser.add_argument("--polyak", type=float, default=0.995)
     parser.add_argument("--min_steps_update", type=int, default=500)
     parser.add_argument("--buffer_size", type=int, default=1e6)
+    parser.add_argument("--start_steps", type=int, default=1e5)
     args = parser.parse_args()
     print(args)
 
@@ -296,7 +310,7 @@ if __name__ == '__main__':
     if args.episodes > 0 and not args.test_only:
         train(agent=agent, env=env, episodes=args.episodes, batch_size=args.bs, save_path=args.path, save_freq=args.save_freq, 
             discount=args.discount, init_ep=args.init_ep, max_ep_len=args.max_ep_len, lr=args.lr, polyak=args.polyak,
-            min_steps_update=args.min_steps_update, buffer_size=args.buffer_size)
+            min_steps_update=args.min_steps_update, buffer_size=args.buffer_size, start_steps=args.start_steps)
 
     if args.tests > 0:
         test_agent(agent, env, args.tests, 0.025)
