@@ -5,107 +5,24 @@ import gym
 import pybullet_envs
 import time
 
+from core.agents import Agent
 from core.agents import QFunction
 from core.agents import DeterministicPolicy
 
+from core.buffers import ReplayBuffer
+
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-class ReplayBuffer:
-    """ Replay Buffer stores the experiences of the agent"""
-    def __init__(self, max_size, state_dim, action_dim, device):
-        self.max_size = int(max_size)
-
-        self.states = np.zeros((self.max_size, state_dim), dtype=np.float32)
-        self.actions = np.zeros((self.max_size, action_dim), dtype=np.float32)
-        self.rewards = np.zeros(self.max_size, dtype=np.float32)
-        self.next_states = np.zeros((self.max_size, state_dim), dtype=np.float32)
-        self.dones = np.zeros(self.max_size, dtype=np.float32)
-
-        self.size = 0
-        self.index = 0
-
-        self.device = device
-
-    def store(self, s, a, r, next_s, done):
-        self.states[self.index] = s
-        self.actions[self.index] = a
-        self.rewards[self.index] = r
-        self.next_states[self.index] = next_s
-        self.dones[self.index] = done
-        if self.size < self.max_size:
-            self.size += 1
-        self.index = (self.index + 1) % self.max_size
-
-    def sample(self, num):
-        indices = np.random.randint(0, self.size, size=num)
-        return (
-            self.states[indices],
-            self.actions[indices],
-            self.rewards[indices],
-            self.next_states[indices],
-            self.dones[indices]
-        )
-
-    def sample_torch(self, num):
-        indices = np.random.randint(0, self.size, size=num)
-        return (
-            torch.FloatTensor(self.states[indices]).to(self.device).detach(),
-            torch.FloatTensor(self.actions[indices]).to(self.device).detach(),
-            torch.FloatTensor(self.rewards[indices]).to(self.device).detach(),
-            torch.FloatTensor(self.next_states[indices]).to(self.device).detach(),
-            torch.FloatTensor(self.dones[indices]).to(self.device).detach()
-        )
-
-class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_layers, hidden_activation=nn.Tanh, final_activation=nn.Tanh):
-        super(Actor, self).__init__()
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-        self._build_policy_model([state_dim] + hidden_layers + [action_dim], hidden_activation, final_activation)
-
-    def _build_policy_model(self, sizes, hidden_activation, final_activation):
-        layers = []
-        for i, o in zip(sizes[:-2], sizes[1:-1]):
-            layers.append(nn.Linear(i, o))
-            if hidden_activation:
-                layers.append(hidden_activation())
-        layers.append(nn.Linear(sizes[-2], sizes[-1]))
-        if final_activation:
-            layers.append(final_activation())
-        self.policy = nn.Sequential(*layers)
-
-    def forward(self, states):
-        return self.policy(states)
-
-class Critic(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_layers):
-        super(Critic, self).__init__()
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-        self._build_q_model([state_dim + action_dim] + hidden_layers + [1])
-
-    def _build_q_model(self, sizes):
-        layers = []
-        for i, o in zip(sizes[:-2], sizes[1:-1]):
-            layers.append(nn.Linear(i, o))
-            layers.append(nn.Tanh())
-        layers.append(nn.Linear(sizes[-2], sizes[-1]))
-        self.qf = nn.Sequential(*layers)
-
-    def forward(self, states, actions):
-        return self.qf(torch.cat([states, actions], 1))
-
-class Agent(nn.Module):
+class TD3Agent(Agent):
     def __init__(self, state_dim, action_dim, action_noise, action_low, action_high, hidden_layers=[32, 32]):
-        super(Agent, self).__init__()
-        self.state_dim = state_dim
-        self.action_dim = action_dim
+        super(Agent, self).__init__(state_dim, action_dim)
         self.action_noise = action_noise
         self.action_low = action_low
         self.action_high = action_high
         self.hidden_layers = hidden_layers
-        self.actor = Actor(state_dim, action_dim, hidden_layers)
-        self.critic = Critic(state_dim, action_dim, hidden_layers)
+        self.actor = DeterministicPolicy(state_dim, action_dim, hidden_layers)
+        self.critic1 = QFunction(state_dim, action_dim, hidden_layers)
+        self.critic2 = QFunction(state_dim, action_dim, hidden_layers)
 
     def forward(self):
         raise NotImplementedError
@@ -161,7 +78,7 @@ class Agent(nn.Module):
 def train(agent=None, env=None, episodes=10000, buffer_size=1e6, batch_size=100, save_path=None, save_freq=100, init_ep=0, 
         discount=0.99, max_ep_len=1000, lr=3e-4, polyak=0.995, min_steps_update=500, start_steps=1e4):
 
-    target = Agent(agent.state_dim, agent.action_dim, agent.action_noise, 
+    target = TD3Agent(agent.state_dim, agent.action_dim, agent.action_noise, 
                 agent.action_low, agent.action_high, agent.hidden_layers).to(device)
     target.load_state_dict(agent.state_dict())
 
@@ -317,14 +234,16 @@ if __name__ == '__main__':
     if args.hidden_layers[1:-1].strip() != "":
         hidden_layers = [int(x) for x in args.hidden_layers[1:-1].split(",")]
 
-    agent = Agent(env.observation_space.shape[0], env.action_space.shape[0], args.action_noise,
+    agent = TD3Agent(env.observation_space.shape[0], env.action_space.shape[0], args.action_noise,
                     env.action_space.low, env.action_space.high, hidden_layers=hidden_layers).to(device)
 
+    model_path = f"{os.path.dirname(__file__)}/{args.path}"
+
     if args.load_ep >= 0:
-        agent.load_state_dict(torch.load(f"{torch.load(os.path.dirname(__file__))}/{args.path}_{args.load_ep}.pth"))
+        agent.load_state_dict(torch.load(f"{model_path}_{args.load_ep}.pth"))
 
     if args.episodes > 0 and not args.test_only:
-        train(agent=agent, env=env, episodes=args.episodes, batch_size=args.bs, save_path=args.path, save_freq=args.save_freq, 
+        train(agent=agent, env=env, episodes=args.episodes, batch_size=args.bs, save_path=model_path, save_freq=args.save_freq, 
             discount=args.discount, init_ep=args.init_ep, max_ep_len=args.max_ep_len, lr=args.lr, polyak=args.polyak,
             min_steps_update=args.min_steps_update, buffer_size=args.buffer_size, start_steps=args.start_steps)
 

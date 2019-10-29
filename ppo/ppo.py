@@ -6,142 +6,19 @@ import gym
 import pybullet_envs
 import time
 
+from core.buffers import GAEBuffer
+
+from core.agents import Agent
+from core.agents import GaussianPolicy
+from core.agents import ValueFunction
+
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-def discounted_cumsum(x, discount):
-    ret = torch.zeros_like(x)
-    ret[-1] = x[-1]
-    for t in range(len(x) - 2, -1, -1):
-        ret[t] = x[t] + discount * ret[t + 1]
-    return ret
-
-class GAEBuffer:
-    def __init__(self, batch_size, lam, discount, state_dim, action_dim):
-        self.batch_size = batch_size
-        self.lam = lam
-        self.discount = discount
-        
-        self.states = torch.zeros((batch_size, state_dim)).to(device)
-        self.actions = torch.zeros((batch_size, action_dim)).to(device)
-        self.rewards = torch.zeros(batch_size).to(device)
-        self.advs = torch.zeros(batch_size).to(device)
-        self.log_probs = torch.zeros(batch_size).to(device)
-
-        self.num = 0
-        self.trajectory_start = 0
-
-    def store_numpy(self, s, a, r):
-        self.store(torch.tensor(s), torch.tensor(a), r)
-
-    def store(self, s, a, r):
-        assert not self.is_full(), "Tried to store but buffer is full."
-        self.states[self.num] = s
-        self.actions[self.num] = a
-        self.rewards[self.num] = r
-        self.num += 1
-
-    def is_full(self):
-        return self.num == self.batch_size
-
-    # def calc_trajectory(self, agent, s, is_terminal):
-    #     """ After an episode ends, calculate the GAE and rewards-to-go for this trajectory
-        
-    #     Args:
-    #         agent: an instance of Agent with evaluate method
-    #         s: the final state of the trajectory
-    #         is_terminal: if s is not a terminal state (e.g. max_ep_len or batch_size reached), then use the 
-    #             agent's value function to estimate the returns
-    #     """
-    #     trajectory = slice(self.trajectory_start, self.num)
-
-    #     # calculate the state-values and log-probs of this trajectory
-    #     values, self.log_probs[trajectory] = agent.evaluate(self.states[trajectory], self.actions[trajectory])
-    #     final_val = 0 if is_terminal else agent.calc_state_value(s)
-    #     values = np.append(values, final_val)
-
-    #     # GAE calculations for actor update
-    #     deltas = self.rewards[trajectory] + self.discount * values[1:] - values[:-1]
-    #     self.advs[trajectory] = discounted_cumsum(deltas, self.discount * self.lam)
-
-    #     # rewards to go calculations for critic update, estimate final returns if not terminal
-    #     self.rewards[self.num - 1] += self.discount * final_val
-    #     self.rewards[trajectory] = discounted_cumsum(self.rewards[trajectory], self.discount)
-
-    #     # start new trajectory
-    #     self.trajectory_start = self.num
-
-    def calc_trajectory(self, final_val):
-        """ After an episode ends, calculate the GAE and rewards-to-go for this trajectory
-        
-        Args:
-            agent: an instance of Agent with evaluate method
-            s: the final state of the trajectory
-            is_terminal: if s is not a terminal state (e.g. max_ep_len or batch_size reached), then use the 
-                agent's value function to estimate the returns
-        """
-        trajectory = slice(self.trajectory_start, self.num)
-
-        # calculate the state-values and log-probs of this trajectory
-        values, log_probs, _ = agent.evaluate(self.states[trajectory], self.actions[trajectory])
-        if values.dim() == 0:
-            values = values.reshape(1)
-        if log_probs.dim() == 0:
-            log_probs = log_probs.reshape(1)
-        values = torch.cat((values, torch.Tensor([final_val]).to(device)))
-        rewards = torch.cat((self.rewards[trajectory], torch.Tensor([final_val]).to(device)))
-        self.log_probs[trajectory] = log_probs
-
-        # GAE calculations for actor update
-        deltas = rewards[:-1] + self.discount * values[1:] - values[:-1]
-        self.advs[trajectory] = discounted_cumsum(deltas, self.discount * self.lam)
-
-        # rewards to go calculations for critic update, estimate final returns if not terminal
-        self.rewards[trajectory] = discounted_cumsum(rewards, self.discount)[:-1]
-
-        # start new trajectory
-        self.trajectory_start = self.num
-    
-    def batch_normalize_advs(self, eps=1e-8):
-        assert self.is_full(), "Tried to batch normalize before buffer is full"
-        advs_mean, advs_std = torch.mean(self.advs), torch.std(self.advs)
-        self.advs = (self.advs - advs_mean) / (advs_std + eps)
-
-    def get_buffer(self):
-        assert self.is_full(), "Tried to get buffer before buffer is full"
-        self.batch_normalize_advs()
-        self.clear()
-        return self.states.detach(), self.actions.detach(), self.rewards.detach(), self.advs.detach(), self.log_probs.detach()
-
-    def clear(self):
-        self.num = 0
-        self.trajectory_start = 0
-
-class Agent(nn.Module):
+class PPOAgent(Agent):
     def __init__(self, state_dim, action_dim, init_std=0.5, hidden_layers=[32, 32]):
-        super(Agent, self).__init__()
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-        self._build_policy_model([state_dim] + hidden_layers + [action_dim], init_std)
-        self._build_value_model([state_dim] + hidden_layers + [1])
-
-    def _build_policy_model(self, sizes, init_std):
-        layers = []
-        for i, o in zip(sizes[:-1], sizes[1:]):
-            layers.append(nn.Linear(i, o))
-            layers.append(nn.Tanh())
-        self.policy = nn.Sequential(*layers)
-        self.log_std = nn.Parameter(torch.full((sizes[-1],), np.log(init_std)))
-
-    def _build_value_model(self, sizes):
-        layers = []
-        for i, o in zip(sizes[:-2], sizes[1:-1]):
-            layers.append(nn.Linear(i, o))
-            layers.append(nn.Tanh())
-        layers.append(nn.Linear(sizes[-2], sizes[-1]))
-        self.vf = nn.Sequential(*layers)
-
-    def forward(self):
-        raise NotImplementedError
+        super(PPOAgent, self).__init__(state_dim, action_dim)
+        self.policy = GaussianPolicy(state_dim, action_dim, hidden_layers, init_std)
+        self.vf = ValueFunction(state_dim, hidden_layers)
 
     def evaluate(self, states, actions):
         """ Returns the state-values and log probs of the given states and actions
@@ -154,11 +31,9 @@ class Agent(nn.Module):
             (n,) tensor of state values,
             (n,) tensor of log probs
         """
-        means = self.policy(states)
-        log_stds = self.log_std.expand_as(means)
-        cov = torch.diag_embed(torch.exp(log_stds * 2.0)).to(device)
+        means, covs = self.policy(states)
 
-        dist = MultivariateNormal(means, cov)
+        dist = MultivariateNormal(means, covs)
         log_probs = dist.log_prob(actions)
         entropy = dist.entropy()
 
@@ -187,8 +62,7 @@ class Agent(nn.Module):
         Returns:
             (action_dim,) tensor
         """
-        mean = self.policy(state)
-        cov = torch.diag(torch.exp(self.log_std * 2.0)).to(device)
+        mean, cov = self.policy(state)
         dist = MultivariateNormal(mean, cov)
         return dist.sample()
 
@@ -208,7 +82,7 @@ class Agent(nn.Module):
 def train(agent=None, env=None, episodes=10000, batch_size=4000, save_path=None, save_freq=100, init_ep=0, 
         lam=0.97, discount=0.99, max_ep_len=1000, eps_clip=0.2, vf_coef=0.5, lr=3e-4, update_steps=80):
 
-    buffer = GAEBuffer(batch_size, lam, discount, agent.state_dim, agent.action_dim)
+    buffer = GAEBuffer(batch_size, lam, discount, agent.state_dim, agent.action_dim, agent, device)
     optimizer = torch.optim.Adam(agent.parameters(), lr=lr)
 
     def update():
@@ -283,13 +157,13 @@ def train(agent=None, env=None, episodes=10000, batch_size=4000, save_path=None,
         update()
 
         end = time.time()
-        print(f"{end - start}s, \t episode: {ep}, \t return: {np.mean(ep_returns)}, \t episode length: {np.mean(ep_lens)} \t {np.exp(agent.log_std.cpu().data.numpy())}")
+        print(f"{end - start}s, \t episode: {ep}, \t return: {np.mean(ep_returns)}, \t episode length: {np.mean(ep_lens)} \t {np.exp(agent.policy.log_std.cpu().data.numpy())}")
         
         if ep - last_save >= save_freq:
-            torch.save(agent.state_dict(), f"./{save_path}_{ep}.pth")
+            torch.save(agent.state_dict(), f"{save_path}_{ep}.pth")
             last_save = ep
         
-    torch.save(agent.state_dict(), f"./{save_path}_{ep}.pth")
+    torch.save(agent.state_dict(), f"{save_path}_{ep}.pth")
 
 def test_agent(agent, env, n_tests, delay=1.0, bullet=True):
     agent.log_std.data = torch.full((agent.action_dim,), np.log(0.1))
@@ -318,7 +192,7 @@ def test_agent(agent, env, n_tests, delay=1.0, bullet=True):
 #python ppo.py --save_freq 50 --epochs 1500 --bs 4000 --max_ep_len 1500 --discount 0.99 --lam 0.97 --eps_clip 0.2 --seed 123 --pi_lr 3e-4 --pi_update_steps 80 --v_lr 1e-3 --v_update_steps 80 --hidden_layers "[64, 32]"
 
 if __name__ == '__main__':
-    import argparse
+    import argparse, os
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=str, default="HopperBulletEnv-v0")
     parser.add_argument("--path", type=str, default="models/hopper_model")
@@ -353,13 +227,15 @@ if __name__ == '__main__':
     if args.hidden_layers[1:-1].strip() != "":
         hidden_layers = [int(x) for x in args.hidden_layers[1:-1].split(",")]
 
-    agent = Agent(env.observation_space.shape[0], env.action_space.shape[0], hidden_layers=hidden_layers, init_std=args.init_std).to(device)
+    agent = PPOAgent(env.observation_space.shape[0], env.action_space.shape[0], hidden_layers=hidden_layers, init_std=args.init_std).to(device)
+
+    model_path = f"{os.path.dirname(__file__)}/{args.path}"
 
     if args.load_ep >= 0:
-        agent.load_state_dict(torch.load(f"./{args.path}_{args.load_ep}.pth"))
+        agent.load_state_dict(torch.load(f"{model_path}_{args.load_ep}.pth"))
 
     if args.episodes > 0 and not args.test_only:
-        train(agent=agent, env=env, episodes=args.episodes, batch_size=args.bs, save_path=args.path, save_freq=args.save_freq, 
+        train(agent=agent, env=env, episodes=args.episodes, batch_size=args.bs, save_path=model_path, save_freq=args.save_freq, 
             discount=args.discount, lam=args.lam, init_ep=args.init_ep, max_ep_len=args.max_ep_len, 
             eps_clip=args.eps_clip, vf_coef=args.vf_coef, lr=args.lr, update_steps=args.update_steps)
 

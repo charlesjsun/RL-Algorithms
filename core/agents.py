@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 
+import numpy as np
+
 class MLPModel(nn.Module):
     """ Base class for a Multi-Layered Perceptron model. """
     def __init__(self, input_dim, output_dim, hidden_layers, hidden_activation=nn.Tanh, final_activation=nn.Tanh):
@@ -31,7 +33,7 @@ class GaussianPolicy(MLPModel):
             action_dim, 
             hidden_layers, hidden_activation, final_activation
         )
-        self.log_std = nn.Parameter(torch.full((sizes[-1],), np.log(init_std)))
+        self.log_std = nn.Parameter(torch.full((action_dim,), np.log(init_std)))
 
     def forward(self, states):
         """ Returns the mean and covariance matrix of the given states,
@@ -157,8 +159,8 @@ class Agent(nn.Module):
         Returns:
             (action_dim,) tensor
         """
-        return NotImplementedError
-
+        raise NotImplementedError
+    
     def sample_action_numpy(self, state):
         """ Returns an action (in np.array) based on the current policy given state
 
