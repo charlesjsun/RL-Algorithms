@@ -21,7 +21,7 @@ class TD3Agent(Agent):
     """
     def __init__(self, state_dim, action_dim, action_noise, action_low, action_high, 
                     target_noise, noise_clip, hidden_layers=[32, 32]):
-        super(Agent, self).__init__(state_dim, action_dim)
+        super(TD3Agent, self).__init__(state_dim, action_dim)
         self.action_noise = action_noise
         self.action_low = action_low
         self.action_high = action_high
@@ -66,7 +66,7 @@ class TD3Agent(Agent):
         noise = torch.normal(0.0, self.target_noise, size=(self.action_dim,))
         noise = torch.clamp(noise, -self.noise_clip, self.noise_clip)
         actions = self.actor(states)
-        smoothed = actions + noise.expand_as(actions)
+        smoothed = actions + noise.expand_as(actions).to(device)
         return torch.clamp(smoothed, self.action_low, self.action_high) 
 
     def evaluate_q1(self, states, actions):
@@ -134,7 +134,7 @@ def train(agent=None, env=None, episodes=10000, buffer_size=1e6, batch_size=100,
     critic1_optimizer = torch.optim.Adam(agent.critic2.parameters(), lr=lr)
     critic2_optimizer = torch.optim.Adam(agent.critic2.parameters(), lr=lr)
     
-    buffer = ReplayBuffer(buffer_size, agent.state_dim, agent.action_dim)
+    buffer = ReplayBuffer(buffer_size, agent.state_dim, agent.action_dim, device)
 
     def update(update_steps):
         for i in range(update_steps):
@@ -146,7 +146,7 @@ def train(agent=None, env=None, episodes=10000, buffer_size=1e6, batch_size=100,
 
             # calcualte q functions losses
             critic1_loss = torch.mean((agent.evaluate_q1(states, actions) - target_qs) ** 2)
-            critic2_loss = torch.mean((agent.evaluate_q1(states, actions) - target_qs) ** 2)
+            critic2_loss = torch.mean((agent.evaluate_q2(states, actions) - target_qs) ** 2)
             
             # optimize q one step for both critics
             critic1_optimizer.zero_grad()
@@ -310,7 +310,7 @@ if __name__ == '__main__':
         train(agent=agent, env=env, episodes=args.episodes, batch_size=args.bs, save_path=model_path, save_freq=args.save_freq, 
             discount=args.discount, init_ep=args.init_ep, max_ep_len=args.max_ep_len, lr=args.lr, polyak=args.polyak,
             min_steps_update=args.min_steps_update, buffer_size=args.buffer_size, start_steps=args.start_steps, 
-            policy_delay=args.polciy_delay)
+            policy_delay=args.policy_delay)
 
     if args.tests > 0:
         test_agent(agent, env, args.tests, 1.0 / 60.0)
