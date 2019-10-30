@@ -37,9 +37,6 @@ class TD3Agent(Agent):
         return TD3Agent(self.state_dim, self.action_dim, self.action_noise, self.action_low, self.action_high,
                         self.target_noise, self.noise_clip, self.hidden_layers)
 
-    def forward(self):
-        raise NotImplementedError
-
     def min_q_values(self, states, actions):
         """ Returns the min Q-values (between the 2 Q-functions) of the given states and actions
 
@@ -131,7 +128,7 @@ def train(agent=None, env=None, episodes=10000, buffer_size=1e6, batch_size=100,
     target.load_state_dict(agent.state_dict())
 
     actor_optimizer = torch.optim.Adam(agent.actor.parameters(), lr=lr)
-    critic1_optimizer = torch.optim.Adam(agent.critic2.parameters(), lr=lr)
+    critic1_optimizer = torch.optim.Adam(agent.critic1.parameters(), lr=lr)
     critic2_optimizer = torch.optim.Adam(agent.critic2.parameters(), lr=lr)
     
     buffer = ReplayBuffer(buffer_size, agent.state_dim, agent.action_dim, device)
@@ -228,10 +225,10 @@ def train(agent=None, env=None, episodes=10000, buffer_size=1e6, batch_size=100,
         print(f"{end - start}s, \t episode: {ep}, \t return: {np.mean(ep_returns)}, \t episode length: {np.mean(ep_lens)}")
         
         if ep - last_save >= save_freq:
-            torch.save(agent.state_dict(), f"./{save_path}_{ep}.pth")
+            torch.save(agent.state_dict(), f"{save_path}_{ep}.pth")
             last_save = ep
         
-    torch.save(agent.state_dict(), f"./{save_path}_{ep}.pth")
+    torch.save(agent.state_dict(), f"{save_path}_{ep}.pth")
 
 def test_agent(agent, env, n_tests, delay=1.0, bullet=True):
     agent.action_noise = 0.0
@@ -260,28 +257,31 @@ def test_agent(agent, env, n_tests, delay=1.0, bullet=True):
 if __name__ == '__main__':
     import argparse, os
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env", type=str, default="HopperBulletEnv-v0")
-    parser.add_argument("--path", type=str, default="models/hopper_model")
+    # parser.add_argument("--env", type=str, default="HopperBulletEnv-v0")
+    # parser.add_argument("--path", type=str, default="models/hopper_model")
+    parser.add_argument("--env", type=str, default="BipedalWalker-v2")
+    parser.add_argument("--path", type=str, default="models/walker_model")
     parser.add_argument("--load_ep", type=int, default=-1)
     parser.add_argument("--tests", type=int, default=0)
     parser.add_argument("--init_ep", type=int, default=0)
-    parser.add_argument("--save_freq", type=int, default=500)
+    parser.add_argument("--save_freq", type=int, default=250)
     parser.add_argument("--episodes", type=int, default=10000)
     parser.add_argument("--bs", type=int, default=100)
-    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--test_only", action="store_true")
     parser.add_argument("--discount", type=float, default=0.99)
     parser.add_argument("--max_ep_len", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=69420)
-    parser.add_argument("--hidden_layers", type=str, default="[128, 64]")
+    parser.add_argument("--hidden_layers", type=str, default="[400, 300]")
     parser.add_argument("--action_noise", type=float, default=0.1)
     parser.add_argument("--polyak", type=float, default=0.995)
-    parser.add_argument("--min_steps_update", type=int, default=500)
+    parser.add_argument("--min_steps_update", type=int, default=0)
     parser.add_argument("--buffer_size", type=int, default=1e6)
     parser.add_argument("--start_steps", type=int, default=1e4)
     parser.add_argument("--policy_delay", type=int, default=2)
     parser.add_argument("--target_noise", type=float, default=0.2)
     parser.add_argument("--noise_clip", type=float, default=0.5)
+    parser.add_argument("--bullet", action="store_true")
 
     args = parser.parse_args()
     print(args)
@@ -313,6 +313,6 @@ if __name__ == '__main__':
             policy_delay=args.policy_delay)
 
     if args.tests > 0:
-        test_agent(agent, env, args.tests, 1.0 / 60.0)
+        test_agent(agent, env, args.tests, 1.0 / 60.0, bullet=args.bullet)
 
     env.close()
