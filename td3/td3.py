@@ -14,21 +14,34 @@ from core.buffers import ReplayBuffer
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class TD3Agent(Agent):
-    def __init__(self, state_dim, action_dim, action_noise, action_low, action_high, hidden_layers=[32, 32]):
+    """
+    Args:
+        action_low: float
+        action_high: float 
+    """
+    def __init__(self, state_dim, action_dim, action_noise, action_low, action_high, 
+                    target_noise, noise_clip, hidden_layers=[32, 32]):
         super(Agent, self).__init__(state_dim, action_dim)
         self.action_noise = action_noise
         self.action_low = action_low
         self.action_high = action_high
+        self.target_noise = target_noise
+        self.noise_clip = noise_clip
         self.hidden_layers = hidden_layers
         self.actor = DeterministicPolicy(state_dim, action_dim, hidden_layers)
         self.critic1 = QFunction(state_dim, action_dim, hidden_layers)
         self.critic2 = QFunction(state_dim, action_dim, hidden_layers)
 
+    def copy(self):
+        """ Returns a new TD3Agent with the same parameters (not weights) """
+        return TD3Agent(self.state_dim, self.action_dim, self.action_noise, self.action_low, self.action_high,
+                        self.target_noise, self.noise_clip, self.hidden_layers)
+
     def forward(self):
         raise NotImplementedError
 
-    def evaluate(self, states, actions):
-        """ Returns the q-values of the given states and actions
+    def min_q_values(self, states, actions):
+        """ Returns the min Q-values (between the 2 Q-functions) of the given states and actions
 
         Args:
             states: (n, state_dim) tensor
@@ -37,7 +50,43 @@ class TD3Agent(Agent):
         Returns:
             (n,) tensor of q-values
         """
-        return torch.squeeze(self.critic(states, actions))
+        q1 = torch.squeeze(self.critic1(states, actions))
+        q2 = torch.squeeze(self.critic2(states, actions))
+        return torch.min(q1, q2)
+
+    def target_actions(self, states):
+        """ Returns the target actions taken given the current states after target policy smoothing
+
+        Args:
+            states: (n, state_dim) tensor
+
+        Returns:
+            (n, action_dim) tensor
+        """
+        noise = torch.normal(0.0, self.target_noise, size=(self.action_dim,))
+        noise = torch.clamp(noise, -self.noise_clip, self.noise_clip)
+        actions = self.actor(states)
+        smoothed = actions + noise.expand_as(actions)
+        return torch.clamp(smoothed, self.action_low, self.action_high) 
+
+    def evaluate_q1(self, states, actions):
+        """ Returns Q-values of critic1 of the given states and actions
+
+        Args:
+            states: (n, state_dim) tensor
+            actions: (n, action_dim) tensor
+
+        Returns:
+            (n,) tensor of q-values
+        """
+        return torch.squeeze(self.critic1(states, actions))
+
+    def evaluate_q2(self, states, actions):
+        """ Returns Q-values of critic1 of the given states and actions
+        
+        Args/Returns: See evaluate_q1
+        """
+        return torch.squeeze(self.critic2(states, actions))
 
     def evaluate_states(self, states):
         """ Returns the actions taken given the current states
@@ -76,41 +125,51 @@ class TD3Agent(Agent):
         return np.clip(action + noise, self.action_low, self.action_high)
 
 def train(agent=None, env=None, episodes=10000, buffer_size=1e6, batch_size=100, save_path=None, save_freq=100, init_ep=0, 
-        discount=0.99, max_ep_len=1000, lr=3e-4, polyak=0.995, min_steps_update=500, start_steps=1e4):
+        discount=0.99, max_ep_len=1000, lr=3e-4, polyak=0.995, min_steps_update=500, start_steps=1e4, policy_delay=2):
 
-    target = TD3Agent(agent.state_dim, agent.action_dim, agent.action_noise, 
-                agent.action_low, agent.action_high, agent.hidden_layers).to(device)
+    target = agent.copy().to(device)
     target.load_state_dict(agent.state_dict())
 
-    buffer = ReplayBuffer(buffer_size, agent.state_dim, agent.action_dim)
     actor_optimizer = torch.optim.Adam(agent.actor.parameters(), lr=lr)
-    critic_optimizer = torch.optim.Adam(agent.critic.parameters(), lr=lr)
+    critic1_optimizer = torch.optim.Adam(agent.critic2.parameters(), lr=lr)
+    critic2_optimizer = torch.optim.Adam(agent.critic2.parameters(), lr=lr)
+    
+    buffer = ReplayBuffer(buffer_size, agent.state_dim, agent.action_dim)
 
     def update(update_steps):
-        for _ in range(update_steps):
+        for i in range(update_steps):
             states, actions, rewards, next_states, dones = buffer.sample_torch(batch_size)
 
-            # q-function loss
-            target_actions = target.evaluate_states(next_states)
-            target_qs = (rewards + discount * (1.0 - dones) * target.evaluate(next_states, target_actions)).detach()
-            critic_loss = torch.mean((agent.evaluate(states, actions) - target_qs) ** 2)
+            # calculate targets (after policy smoothing and minimization)
+            target_actions = target.target_actions(next_states)
+            target_qs = (rewards + discount * (1.0 - dones) * target.min_q_values(next_states, target_actions)).detach()
+
+            # calcualte q functions losses
+            critic1_loss = torch.mean((agent.evaluate_q1(states, actions) - target_qs) ** 2)
+            critic2_loss = torch.mean((agent.evaluate_q1(states, actions) - target_qs) ** 2)
             
-            # optimize q one step
-            critic_optimizer.zero_grad()
-            critic_loss.backward()
-            critic_optimizer.step()
+            # optimize q one step for both critics
+            critic1_optimizer.zero_grad()
+            critic1_loss.backward()
+            critic1_optimizer.step()
 
-            # policy loss
-            actor_loss = -torch.mean(agent.evaluate(states, agent.evaluate_states(states)))
+            critic2_optimizer.zero_grad()
+            critic2_loss.backward()
+            critic2_optimizer.step()
 
-            # optimize pi one step
-            actor_optimizer.zero_grad()
-            actor_loss.backward()
-            actor_optimizer.step()
+            # delayed policy updates
+            if i % policy_delay == 0:
+                # policy loss
+                actor_loss = -torch.mean(agent.evaluate_q1(states, agent.evaluate_states(states)))
 
-            # update target networks
-            for param, target_param in zip(agent.parameters(), target.parameters()):
-                target_param.data.copy_(polyak * target_param.data + (1.0 - polyak) * param.data)
+                # optimize pi one step
+                actor_optimizer.zero_grad()
+                actor_loss.backward()
+                actor_optimizer.step()
+
+                # update target networks
+                for param, target_param in zip(agent.parameters(), target.parameters()):
+                    target_param.data.copy_(polyak * target_param.data + (1.0 - polyak) * param.data)
 
     # Random exploration at the beginning for start_steps
     print(f"Start steps: {int(start_steps)}")
@@ -220,6 +279,10 @@ if __name__ == '__main__':
     parser.add_argument("--min_steps_update", type=int, default=500)
     parser.add_argument("--buffer_size", type=int, default=1e6)
     parser.add_argument("--start_steps", type=int, default=1e4)
+    parser.add_argument("--policy_delay", type=int, default=2)
+    parser.add_argument("--target_noise", type=float, default=0.2)
+    parser.add_argument("--noise_clip", type=float, default=0.5)
+
     args = parser.parse_args()
     print(args)
 
@@ -235,7 +298,8 @@ if __name__ == '__main__':
         hidden_layers = [int(x) for x in args.hidden_layers[1:-1].split(",")]
 
     agent = TD3Agent(env.observation_space.shape[0], env.action_space.shape[0], args.action_noise,
-                    env.action_space.low, env.action_space.high, hidden_layers=hidden_layers).to(device)
+                    env.action_space.low[0], env.action_space.high[0], args.target_noise, args.noise_clip,
+                     hidden_layers=hidden_layers).to(device)
 
     model_path = f"{os.path.dirname(__file__)}/{args.path}"
 
@@ -245,7 +309,8 @@ if __name__ == '__main__':
     if args.episodes > 0 and not args.test_only:
         train(agent=agent, env=env, episodes=args.episodes, batch_size=args.bs, save_path=model_path, save_freq=args.save_freq, 
             discount=args.discount, init_ep=args.init_ep, max_ep_len=args.max_ep_len, lr=args.lr, polyak=args.polyak,
-            min_steps_update=args.min_steps_update, buffer_size=args.buffer_size, start_steps=args.start_steps)
+            min_steps_update=args.min_steps_update, buffer_size=args.buffer_size, start_steps=args.start_steps, 
+            policy_delay=args.polciy_delay)
 
     if args.tests > 0:
         test_agent(agent, env, args.tests, 1.0 / 60.0)
