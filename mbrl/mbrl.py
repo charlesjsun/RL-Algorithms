@@ -119,7 +119,9 @@ def train(agent, env, params):
         ep_len = 0
 
         while True:
+            start_action_time = time.time()
             a = agent.sample_action_numpy(s)
+            print(time.time() - start_action_time)
             new_s, r, done, _ = env.step(a)
             buffer.store(s, a, r, new_s, done)
             s = new_s

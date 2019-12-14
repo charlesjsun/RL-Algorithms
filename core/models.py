@@ -15,16 +15,16 @@ class DeterministicDeltaModel(MLP):
             hidden_layers, hidden_activation, None
         )
 
-    def forward(self, state, action):
-        """ Returns the predicted change in state given states and actions.
-            next_state = state + self.forward(state, action)
+    def forward(self, states, actions):
+        """ Returns the predicted change in states given states and actions.
+            next_states = states + self.forward(states, actions)
 
         Args:
-            states: (n, state_dim) or (state_dim,) tensor
-            actions: (n, state_dim) or (state_dim,) tensor
+            states: (n, state_dim) tensor
+            actions: (n, action_dim) tensor
 
         Returns:
-            (n, state_dim) or (state_dim,) tensor of state changes,
+            (n, state_dim) tensor of state changes,
         """
         return self.model(torch.cat([states, actions], 1))
 
@@ -47,7 +47,7 @@ class RandomShootingMPCPolicy:
         Returns:
             (num_seqs, horizon, action_dim) array
         """
-        return np.random.rand(self.num_seqs, self.horiozn, self.action_dim) * (self.action_high - self.action_low) + self.action_low
+        return np.random.rand(self.num_seqs, self.horizon, self.action_dim) * (self.action_high - self.action_low) + self.action_low
 
     def __call__(self, state):
         """ Returns the best action to take given the state
@@ -58,13 +58,18 @@ class RandomShootingMPCPolicy:
         Returns:
             (action_dim,) action array,
         """
-        action_seqs = torch.FloatTensor(self.sample_action_seqs()).to(self.device)
-        rewards = np.zeros(self.num_seqs)
-        for i in range(self.num_seqs):
-            s = torch.FloatTensor(state).to(self.device)
-            for j in range(self.horizon):
-                a = action_seqs[i, j]
-                rewards[i] += self.env.get_reward(s, a)
-                s += self.model(s, a)
-        best_seq = np.argmax(rewards)
-        return acion_seq[best_seq, 0]
+        reward_seqs = np.zeros(self.num_seqs)
+        action_seqs = self.sample_action_seqs()
+        states = np.repeat(np.expand_dims(state, axis=0), self.num_seqs, axis=0)
+        for t in range(self.horizon):
+            actions = action_seqs[:, t]
+
+            rewards, dones = self.env.get_rewards_dones(states, actions)
+            reward_seqs += rewards * dones
+
+            states_t = torch.FloatTensor(states).to(self.device)
+            actions_t = torch.FloatTensor(actions).to(self.device)
+            states += self.model(states_t, actions_t).detach().cpu().numpy()
+
+        best_seq = np.argmax(reward_seqs)
+        return action_seqs[best_seq, 0]
