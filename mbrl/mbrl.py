@@ -146,16 +146,16 @@ def train(agent, env, params):
         print(f"{end - start}s, \t episode: {ep}, \t return: {np.mean(ep_returns)}, \t episode length: {np.mean(ep_lens)}")
         
         if ep - last_save >= save_freq:
-            torch.save(agent.state_dict(), f"{save_path}_{ep}.pth")
+            torch.save(agent.state_dict(), f"{save_path}/ep_{ep}.pth")
             last_save = ep
         
-    torch.save(agent.state_dict(), f"{save_path}_{ep}.pth")
+    torch.save(agent.state_dict(), f"{save_path}/ep_{ep}.pth")
 
 if __name__ == '__main__':
     import argparse, os
     parser = argparse.ArgumentParser()
     parser.add_argument("--env_name", "-e", type=str, default="HopperMBEnv-v0")
-    parser.add_argument("--local_path", "-p", type=str, default="models/hopper_model")
+    parser.add_argument("--local_path", "-p", type=str, default="models/hopper_models")
     parser.add_argument("--seed", "-s", type=int, default=69420)
     
     parser.add_argument("--tests", type=int, default=0)
@@ -164,9 +164,9 @@ if __name__ == '__main__':
 
     parser.add_argument("--load_ep", type=int, default=-1)
     parser.add_argument("--init_ep", type=int, default=0)
-    parser.add_argument("--save_freq", "-sf", type=int, default=250)
+    parser.add_argument("--save_freq", "-sf", type=int, default=10)
     
-    parser.add_argument("--episodes", "-eps", type=int, default=1000)
+    parser.add_argument("--episodes", "-eps", type=int, default=100)
     parser.add_argument("--max_ep_len", type=int, default=2000)
     parser.add_argument("--start_steps", type=int, default=20000)
     parser.add_argument("--batch_size", "-bs", type=int, default=8000)
@@ -202,11 +202,11 @@ if __name__ == '__main__':
     if args.hidden_layers[1:-1].strip() != "":
         hidden_layers = [int(x) for x in args.hidden_layers[1:-1].split(",")]
 
-    agent = TD3Agent(env.observation_space.shape[0], env.action_space.shape[0], env, 
+    agent = MBRLAgent(env.observation_space.shape[0], env.action_space.shape[0], env, 
                     args.mpc_horizon, args.mpc_num_seqs, hidden_layers=hidden_layers).to(device)
 
     if args.load_ep >= 0:
-        agent.load_state_dict(torch.load(f"{model_path}_{args.load_ep}.pth"))
+        agent.load_state_dict(torch.load(f"{model_path}/ep_{args.load_ep}.pth"))
 
     # training
     if args.episodes > 0 and not args.test_only:
