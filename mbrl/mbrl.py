@@ -185,6 +185,7 @@ if __name__ == '__main__':
 
     # setup environment
     env = gym.make(args.env_name)
+
     if args.seed > -1:
         torch.manual_seed(args.seed)
         env.seed(args.seed)
