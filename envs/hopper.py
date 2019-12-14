@@ -6,8 +6,8 @@ from pybullet_envs import gym_locomotion_envs
 
 class HopperMBEnv(gym_locomotion_envs.HopperBulletEnv):
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(self, *args, **kwargs)
+    def __init__(self, render=False):
+        super().__init__(render)
 
     def reset(self):
         s = super().reset()
