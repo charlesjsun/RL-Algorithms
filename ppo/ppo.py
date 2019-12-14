@@ -12,6 +12,8 @@ from core.agents import Agent
 from core.agents import GaussianPolicy
 from core.agents import ValueFunction
 
+from core.utils import test_agent
+
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class PPOAgent(Agent):
@@ -164,30 +166,6 @@ def train(agent=None, env=None, episodes=10000, batch_size=4000, save_path=None,
             last_save = ep
         
     torch.save(agent.state_dict(), f"{save_path}_{ep}.pth")
-
-def test_agent(agent, env, n_tests, delay=1.0, bullet=True):
-    agent.log_std.data = torch.full((agent.action_dim,), np.log(0.1))
-    for test in range(n_tests):
-        if bullet:
-            env.render(mode="human")
-        s = env.reset()
-        done = False
-        total_reward = 0
-        print(f"Test #{test}")
-        while True:
-            # time.sleep(delay)
-            if bullet:
-                env.camera_adjust()
-            else:
-                env.render()
-            a = agent.sample_action_numpy(s)
-            # print(f"Chose action {a} for state {s}")
-            s, reward, done, _ = env.step(a)
-            total_reward += reward
-            if done:
-                print(f"Done. Total Reward = {total_reward}")
-                time.sleep(2)
-                break
 
 #python ppo.py --save_freq 50 --epochs 1500 --bs 4000 --max_ep_len 1500 --discount 0.99 --lam 0.97 --eps_clip 0.2 --seed 123 --pi_lr 3e-4 --pi_update_steps 80 --v_lr 1e-3 --v_update_steps 80 --hidden_layers "[64, 32]"
 

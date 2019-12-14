@@ -3,10 +3,10 @@ import torch.nn as nn
 
 import numpy as np
 
-class MLPModel(nn.Module):
-    """ Base class for a Multi-Layered Perceptron model. """
+class MLP(nn.Module):
+    """ Base class for a Multi-Layered Perceptron. """
     def __init__(self, input_dim, output_dim, hidden_layers, hidden_activation=nn.Tanh, final_activation=nn.Tanh):
-        super(MLPModel, self).__init__()
+        super(MLP, self).__init__()
         self._build_model([input_dim] + hidden_layers + [output_dim], hidden_activation, final_activation)
 
     def _build_model(self, sizes, hidden_activation, final_activation):
@@ -23,7 +23,7 @@ class MLPModel(nn.Module):
     def forward(self, *input):
         raise NotImplementedError
 
-class GaussianPolicy(MLPModel):
+class GaussianPolicy(MLP):
     """ A stocastic Gaussian policy which uses a diagonal gaussian distribution.
         Contains an attribute for the state-independent log-standard deviation which can also be learned.
     """
@@ -51,7 +51,7 @@ class GaussianPolicy(MLPModel):
         covs = torch.diag_embed(torch.exp(log_stds * 2.0))
         return means, covs
 
-class DeterministicPolicy(MLPModel):
+class DeterministicPolicy(MLP):
     """ A deterministic policy for continuous which maps states directly to actions. """
     def __init__(self, state_dim, action_dim, hidden_layers, hidden_activation=nn.Tanh, final_activation=nn.Tanh):
         super(DeterministicPolicy, self).__init__(
@@ -71,7 +71,7 @@ class DeterministicPolicy(MLPModel):
         """
         return self.model(states)
 
-class ValueFunction(MLPModel):
+class ValueFunction(MLP):
     """ Approximation of the state-value function. """
     def __init__(self, state_dim, hidden_layers, hidden_activation=nn.Tanh):
         super(ValueFunction, self).__init__(
@@ -91,7 +91,7 @@ class ValueFunction(MLPModel):
         """
         return self.model(states)
 
-class QFunction(MLPModel):
+class QFunction(MLP):
     """ Approximation of the Q-value (state-action value) function. """
     def __init__(self, state_dim, action_dim, hidden_layers, hidden_activation=nn.Tanh):
         super(QFunction, self).__init__(

@@ -11,6 +11,8 @@ from core.agents import Agent
 
 from core.buffers import ReplayBuffer
 
+from core.utils import test_agent
+
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class DDPGAgent(Agent):
@@ -159,30 +161,6 @@ def train(agent=None, env=None, episodes=10000, buffer_size=1e6, batch_size=100,
         
     torch.save(agent.state_dict(), f"{save_path}_{ep}.pth")
 
-def test_agent(agent, env, n_tests, delay=1.0, bullet=True):
-    agent.action_noise = 0.0
-    for test in range(n_tests):
-        if bullet:
-            env.render(mode="human")
-        s = env.reset()
-        done = False
-        total_reward = 0
-        print(f"Test #{test}")
-        while True:
-            # time.sleep(delay)
-            if bullet:
-                env.camera_adjust()
-            else:
-                env.render()
-            a = agent.sample_action_numpy(s)
-            # print(f"Chose action {a} for state {s}")
-            s, reward, done, _ = env.step(a)
-            total_reward += reward
-            if done:
-                print(f"Done. Total Reward = {total_reward}")
-                time.sleep(2)
-                break
-
 if __name__ == '__main__':
     import argparse, os
     parser = argparse.ArgumentParser()
@@ -223,6 +201,7 @@ if __name__ == '__main__':
                     env.action_space.low, env.action_space.high, hidden_layers=hidden_layers).to(device)
 
     model_path = f"{os.path.dirname(__file__)}/{args.path}"
+    print(model_path)
 
     if args.load_ep >= 0:
         agent.load_state_dict(torch.load(f"{model_path}_{args.load_ep}.pth"))
